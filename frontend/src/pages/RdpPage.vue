@@ -38,6 +38,7 @@ const { isFullscreen, toggleFullscreen } = useFullscreen(onFullscreenChange)
 
 let guacClient: any = null
 let tunnel: Guacamole.WebSocketTunnel | null = null
+let resizeObserver: ResizeObserver | null = null
 
 function getToolbarHeight(): number {
   const toolbarEl = document.querySelector('.rdp-toolbar') as HTMLElement
@@ -48,20 +49,25 @@ function updateContainerSize() {
   if (!displayContainer.value) return
   const toolbarH = isFullscreen.value ? 0 : getToolbarHeight()
   displayContainer.value.style.top = toolbarH + 'px'
-  displayContainer.value.style.width = window.innerWidth + 'px'
-  displayContainer.value.style.height = (window.innerHeight - toolbarH) + 'px'
+  displayContainer.value.style.width = '100vw'
+  displayContainer.value.style.height = `calc(100vh - ${toolbarH}px)`
 }
 
 function fitDisplay() {
   if (!guacClient || !displayContainer.value) return
   const display = guacClient.getDisplay()
+  const toolbarH = isFullscreen.value ? 0 : getToolbarHeight()
+  // 使用 offsetWidth/offsetHeight 获取容器实际尺寸
   const container = displayContainer.value
-  const containerW = container.clientWidth
-  const containerH = container.clientHeight
+  const containerW = container.offsetWidth
+  const containerH = container.offsetHeight
   const displayW = display.getWidth()
   const displayH = display.getHeight()
   if (displayW === 0 || displayH === 0 || containerW === 0 || containerH === 0) return
-  const scale = Math.min(containerW / displayW, containerH / displayH)
+  
+  // 使用 Math.max 填满容器，确保没有空白区域
+  // 远程桌面可能会有部分内容被裁剪，但可以通过全屏查看完整内容
+  const scale = Math.max(containerW / displayW, containerH / displayH)
   display.scale(scale)
 }
 
@@ -167,23 +173,36 @@ onMounted(() => {
     }
   }
 
+  // 使用 ResizeObserver 监听 .rdp-page 尺寸变化
+  if (pageEl) {
+    resizeObserver = new ResizeObserver(() => {
+      updateContainerSize()
+      requestAnimationFrame(() => fitDisplay())
+      if (guacClient && status.value === 'connected') {
+        const h = isFullscreen.value ? 0 : getToolbarHeight()
+        guacClient.sendSize(window.innerWidth, window.innerHeight - h)
+      }
+    })
+    resizeObserver.observe(pageEl)
+  }
+
+  // window.resize 作为备用监听（某些浏览器最大化可能不触发 ResizeObserver）
   let resizeTimer: ReturnType<typeof setTimeout> | null = null
   window.addEventListener('resize', () => {
     if (resizeTimer) clearTimeout(resizeTimer)
     resizeTimer = setTimeout(() => {
-      if (displayContainer.value && guacClient) {
-        updateContainerSize()
-        fitDisplay()
-        if (!isFullscreen.value && guacClient && status.value === 'connected') {
-          const toolbarH = getToolbarHeight()
-          guacClient.sendSize(window.innerWidth, window.innerHeight - toolbarH)
-        }
+      updateContainerSize()
+      requestAnimationFrame(() => fitDisplay())
+      if (guacClient && status.value === 'connected') {
+        const h = isFullscreen.value ? 0 : getToolbarHeight()
+        guacClient.sendSize(window.innerWidth, window.innerHeight - h)
       }
     }, 100)
   })
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
   tunnel?.disconnect()
   guacClient = null
   tunnel = null
